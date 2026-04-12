@@ -1,0 +1,621 @@
+cat > create_project.sh <<'EOF'
+#!/usr/bin/env bash
+set -e
+
+echo "Creating project files..."
+
+Root files
+cat > package.json <<'JSON'
+{
+  "name": "food-calorie-webapp",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "concurrently "yarn workspace frontend dev" "yarn workspace backend dev"",
+    "start": "yarn workspace frontend start & yarn workspace backend start",
+    "build": "yarn workspace frontend build && yarn workspace backend build",
+    "lint": "yarn workspace frontend lint && yarn workspace backend lint"
+  },
+  "devDependencies": {
+    "concurrently": "^8.0.0"
+  }
+}
+JSON
+
+cat > .gitignore <<'GITIGNORE'
+node_modules
+.env
+.env.local
+/.venv
+/dist
+/.cache
+/.next
+/.venv
+*.pyc
+pycache/
+.DS_Store
+GITIGNORE
+
+cat > .env.example <<'ENV'
+
+Frontend
+NEXT_PUBLIC_API_URL=https://api.example.com
+NEXT_PUBLIC_DISABLE_TELEMETRY=true
+NEXTAUTH_URL=https://app.example.com
+NEXTAUTH_SECRET=changeme
+
+Backend
+BACKEND_HOST=0.0.0.0
+BACKEND_PORT=8000
+HF_API_KEY=your_huggingface_api_key
+REPLICATE_API_TOKEN=your_replicate_api_token
+S3_ENDPOINT=
+S3_ACCESS_KEY=
+S3_SECRET_KEY=
+S3_BUCKET=
+USDA_API_KEY=your_usda_api_key
+
+Optional
+DATABASE_URL=sqlite:///./data.db
+ENV
+
+cat > README.md <<'MD'
+
+Food Photo Calorie Tracker — Web PWA (MVP)
+This repo contains a Next.js frontend and FastAPI backend that process food photos using Hugging Face / Replicate models and map estimated portions to calories using USDA FoodData Central.
+
+Quick local run:
+
+Install dependencies: yarn
+Start dev: yarn dev
+Frontend at http://localhost:3000, backend at http://localhost:8000
+See /docs/deploy.md for detailed deploy steps (Vercel / Render) and environment setup.
+MD
+
+Frontend files
+mkdir -p frontend/pages frontend/components frontend/lib frontend/styles frontend/public
+
+cat > frontend/package.json <<'JSON'
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "13.4.7",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "axios": "^1.4.0",
+    "swr": "^2.1.4",
+    "tailwindcss": "^3.4.7",
+    "clsx": "^1.2.1",
+    "next-auth": "^4.22.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.2.2",
+    "@types/react": "^18.2.21",
+    "@types/node": "^20.5.6"
+  }
+}
+JSON
+
+cat > frontend/tsconfig.json <<'JSON'
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx"
+  },
+  "include": ["next-env.d.ts", "/*.ts", "/*.tsx"],
+  "exclude": ["node_modules"]
+}
+JSON
+
+cat > frontend/next.config.js <<'JS'
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+  env: {
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
+  }
+}
+module.exports = nextConfig
+JS
+
+cat > frontend/tailwind.config.js <<'JS'
+module.exports = {
+  content: ["./pages//*.{js,ts,jsx,tsx}", "./components//*.{js,ts,jsx,tsx}"],
+  theme: { extend: {} },
+  plugins: []
+}
+JS
+
+cat > frontend/postcss.config.js <<'JS'
+module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {}
+  }
+}
+JS
+
+cat > frontend/styles/globals.css <<'CSS'
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+html,body,#__next { height:100% }
+body { -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; }
+CSS
+
+cat > frontend/pages/_app.tsx <<'TS'
+import '../styles/globals.css'
+import type { AppProps } from 'next/app'
+
+export default function App({ Component, pageProps }: AppProps) {
+  return <Component {...pageProps} />
+}
+TS
+
+cat > frontend/lib/api.ts <<'TS'
+import axios from 'axios'
+
+const API = axios.create({
+  baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
+  timeout: 60000
+})
+
+export async function processPhoto(file: File) {
+  const form = new FormData()
+  form.append('photo', file)
+  const res = await API.post('/process-photo', form, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  })
+  return res.data
+}
+
+export async function saveMeal(meal: any) {
+  const res = await API.post('/save-meal', meal)
+  return res.data
+}
+
+export async function getLog(date?: string) {
+  const res = await API.get('/log', { params: { date } })
+  return res.data
+}
+
+export default API
+TS
+
+cat > frontend/components/PhotoUploader.tsx <<'TS'
+import React, { useRef, useState } from 'react'
+import { processPhoto } from '../lib/api'
+
+export default function PhotoUploader({ onResult }: { onResult: (res: any) => void }) {
+  const fileRef = useRef<HTMLInputElement | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleFile(f?: FileList | null) {
+    setError(null)
+    const file = f?.[0]
+    if (!file) return
+    setLoading(true)
+    try {
+      const res = await processPhoto(file)
+      onResult(res)
+    } catch (e: any) {
+      console.error(e)
+      setError('Processing failed. Try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    
+
+<input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={(e) => handleFile(e.target.files)} className="block" /> <button onClick={() => fileRef.current?.click()} className="px-4 py-2 bg-blue-600 text-white rounded" > Take / Upload Photo {loading &&
+Processing...
+} {error &&
+{error}
+}
+) } TS
+cat > frontend/pages/index.tsx <<'TS'
+import React, { useState } from 'react'
+import PhotoUploader from '../components/PhotoUploader'
+import { saveMeal, getLog } from '../lib/api'
+import useSWR from 'swr'
+
+function ResultCard({ item, onUpdate }: any) {
+  const [grams, setGrams] = useState(item.grams)
+  return (
+    
+
+{item.label} ({Math.round(item.confidence*100)}%)
+{Math.round(item.kcal_est)} kcal
+<input type="range" min="10" max="1000" value={grams} onChange={(e)=>{setGrams(Number(e.target.value)); onUpdate({...item, grams: Number(e.target.value), kcal_est: (Number(e.target.value)/100)*item.kcal_per_100g})}} />
+{grams} g
+) }
+export default function Home() {
+  const [results, setResults] = useState<any[]>([])
+  const [saving, setSaving] = useState(false)
+  const { data: log, mutate } = useSWR('/log', ()=>getLog())
+
+  function handleResult(res: any) {
+    // expect res.items: [{label,confidence,grams,kcal_est,kcal_per_100g}]
+    setResults(res.items || [])
+  }
+
+  async function handleSave() {
+    setSaving(true)
+    try {
+      const meal = { items: results, timestamp: new Date().toISOString() }
+      await saveMeal(meal)
+      setResults([])
+      mutate()
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    
+
+Food Photo Calorie Tracker
+text
+
+Collapse
+
+
+ Copy
+
+    <PhotoUploader onResult={handleResult} />
+
+    {results.length > 0 && (
+      <div className="mt-4">
+        <h2 className="font-semibold mb-2">Detected items</h2>
+        {results.map((it, i) => <ResultCard key={i} item={it} onUpdate={(u:any)=>{ const copy=[...results]; copy[i]=u; setResults(copy); }} />)}
+        <div className="flex gap-2">
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-green-600 text-white rounded">Save meal</button>
+          <button onClick={()=>setResults([])} className="px-4 py-2 bg-gray-200 rounded">Discard</button>
+        </div>
+      </div>
+    )}
+
+    <div className="mt-8">
+      <h2 className="font-semibold">Recent log</h2>
+      <div className="mt-2">
+        {log?.meals?.length ? (
+          log.meals.map((m:any,idx:number)=>(
+            <div key={idx} className="p-2 border rounded mb-2">
+              <div className="text-sm text-gray-600">{new Date(m.timestamp).toLocaleString()}</div>
+              <div className="mt-1">{m.items.map((it:any, j:number)=>(<div key={j} className="text-sm">{it.label} — {Math.round(it.kcal_est)} kcal</div>))}</div>
+            </div>
+          ))
+        ) : <div className="text-sm text-gray-500">No meals yet</div>}
+      </div>
+    </div>
+  </div>
+</div>
+  )
+}
+TS
+
+cat > frontend/public/manifest.json <<'JSON'
+{
+  "name": "Food Photo Calorie Tracker",
+  "short_name": "CalorieTracker",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "description": "Take photos of your food and get calorie estimates.",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
+JSON
+
+cat > frontend/README_FRONTEND.md <<'TXT'
+Quick notes:
+
+Build: yarn build
+Dev: yarn dev (frontend will run on :3000)
+Configure NEXT_PUBLIC_API_URL to point to backend (default http://localhost:8000) TXT
+Backend files
+mkdir -p backend/app
+
+cat > backend/pyproject.toml <<'TOML'
+[tool.poetry]
+name = "backend"
+version = "0.1.0"
+description = "FastAPI backend for Food Photo Calorie Tracker"
+authors = ["You you@example.com"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.97.0"
+uvicorn = {extras = ["standard"], version = "^0.22.0"}
+python-multipart = "^0.0.6"
+httpx = "^0.24.3"
+pydantic = "^1.10.11"
+boto3 = "^1.28.39"
+sqlalchemy = "^2.0.19"
+alembic = "^1.11.1"
+databases = "^0.7.2"
+python-dotenv = "^1.1.0"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.4.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+TOML
+
+cat > backend/Dockerfile <<'DOCKER'
+FROM python:3.10-slim
+WORKDIR /app
+COPY pyproject.toml poetry.lock* /app/
+RUN pip install poetry && poetry config virtualenvs.create false && poetry install --no-dev
+COPY . /app
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+DOCKER
+
+cat > backend/app/main.py <<'PY'
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Form
+from fastapi.middleware.cors import CORSMiddleware
+from app import crud, schemas, ml, storage
+from app.database import init_db, get_db
+import os
+
+app = FastAPI(title="Food Photo Calorie Tracker API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[""],  # update in production
+    allow_credentials=True,
+    allow_methods=[""],
+    allow_headers=["*"],
+)
+
+@app.on_event("startup")
+async def startup():
+    init_db()
+
+@app.post("/process-photo")
+async def process_photo(photo: UploadFile = File(...), opt_store: bool = Form(False)):
+    # Save temporarily
+    contents = await photo.read()
+    saved_path = storage.save_temp(contents, photo.filename)
+    try:
+        results = await ml.process_image(saved_path)
+        if opt_store:
+            # upload original optional
+            storage.upload_to_s3(saved_path, photo.filename)
+        # delete local temp by default
+        storage.delete_local(saved_path)
+        return {"items": results}
+    except Exception as e:
+        storage.delete_local(saved_path)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/save-meal")
+async def save_meal(payload: dict):
+    # payload: {items:[{label,grams,kcal_est}], timestamp}
+    meal = crud.save_meal(payload)
+    return {"status": "ok", "meal_id": meal.id}
+
+@app.get("/log")
+def get_log(date: str = None):
+    return crud.get_log(date)
+
+simple health
+@app.get("/ping")
+def ping():
+    return {"ok": True}
+PY
+
+cat > backend/app/database.py <<'PY'
+from sqlalchemy import create_engine, MetaData
+from sqlalchemy.orm import sessionmaker
+import os
+
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data.db")
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+metadata = MetaData()
+
+def init_db():
+    # create simple tables if not exist
+    from app import models
+    models.Base.metadata.create_all(bind=engine)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+PY
+
+cat > backend/app/models.py <<'PY'
+from sqlalchemy import Column, Integer, String, DateTime, JSON
+from sqlalchemy.orm import declarative_base
+import datetime
+
+Base = declarative_base()
+
+class Meal(Base):
+    tablename = "meals"
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    items = Column(JSON)
+    notes = Column(String, nullable=True)
+PY
+
+cat > backend/app/crud.py <<'PY'
+from app.database import SessionLocal
+from app.models import Meal
+import datetime
+from typing import Optional
+
+def save_meal(payload: dict):
+    db = SessionLocal()
+    m = Meal(timestamp = datetime.datetime.fromisoformat(payload.get("timestamp")) if payload.get("timestamp") else datetime.datetime.utcnow(),
+             items = payload.get("items", []),
+             notes = payload.get("notes"))
+    db.add(m)
+    db.commit()
+    db.refresh(m)
+    db.close()
+    return m
+
+def get_log(date: Optional[str] = None):
+    db = SessionLocal()
+    q = db.query(Meal).order_by(Meal.timestamp.desc()).limit(50)
+    if date:
+        # simple filter by date prefix
+        start = datetime.datetime.fromisoformat(date)
+        end = start + datetime.timedelta(days=1)
+        q = db.query(Meal).filter(Meal.timestamp >= start, Meal.timestamp < end).order_by(Meal.timestamp.desc())
+    meals = q.all()
+    db.close()
+    return {"meals": [ {"id":m.id, "timestamp":m.timestamp.isoformat(), "items":m.items} for m in meals ]}
+PY
+
+cat > backend/app/schemas.py <<'PY'
+from pydantic import BaseModel
+from typing import List, Optional
+
+class Item(BaseModel):
+    label: str
+    confidence: float
+    grams: float
+    kcal_est: float
+    kcal_per_100g: float
+
+class MealIn(BaseModel):
+    items: List[Item]
+    timestamp: Optional[str]
+PY
+
+cat > backend/app/storage.py <<'PY'
+import os, uuid, boto3
+from pathlib import Path
+
+TMP_DIR = Path("/tmp/food_app")
+TMP_DIR.mkdir(parents=True, exist_ok=True)
+
+def save_temp(bytes_data: bytes, filename: str):
+    fname = f"{uuid.uuid4().hex}_{filename}"
+    path = TMP_DIR / fname
+    with open(path, "wb") as f:
+        f.write(bytes_data)
+    return str(path)
+
+def delete_local(path: str):
+    try:
+        os.remove(path)
+    except Exception:
+        pass
+
+def upload_to_s3(local_path: str, remote_name: str):
+    endpoint = os.getenv("S3_ENDPOINT")
+    access = os.getenv("S3_ACCESS_KEY")
+    secret = os.getenv("S3_SECRET_KEY")
+    bucket = os.getenv("S3_BUCKET")
+    if not endpoint or not access or not secret or not bucket:
+        return None
+    s3 = boto3.client("s3", aws_access_key_id=access, aws_secret_access_key=secret, endpoint_url=endpoint)
+    key = f"uploads/{remote_name}"
+    s3.upload_file(local_path, bucket, key)
+    return key
+PY
+
+cat > backend/app/ml.py <<'PY'
+import os
+import httpx
+import asyncio
+from typing import List, Dict
+import math
+
+HF_API_KEY = os.getenv("HF_API_KEY") or os.getenv("HF_API_KEY")  # support either var
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+
+Simple tuned defaults: we will call a Hugging Face image classification model and a segmentation model via HF Inference API.
+HF_CLASS_MODEL = "mitchell-ym/food-101-224"  # example; replace as needed
+HF_SEG_MODEL = "timoschick/u2net"  # placeholder for segmentation; adjust
+
+Typical kcal per 100g mapping (fallback) - small sample; expand as needed
+DEFAULT_KCAL_PER_100G = {
+    "apple": 52,
+    "banana": 89,
+    "scrambled eggs": 155,
+    "cheeseburger": 295,
+    "salad": 20,
+    "rice": 130,
+    "chicken breast": 165,
+    "bread": 265,
+    "default": 200
+}
+
+async def hf_classify(image_bytes: bytes) -> List[Dict]:
+    headers = {"Authorization": f"Bearer {HF_API_KEY}"} if HF_API_KEY else {}
+    url = f"https://api-inference.huggingface.co/models/{HF_CLASS_MODEL}"
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        res = await client.post(url, headers=headers, content=image_bytes)
+        res.raise_for_status()
+        data = res.json()
+        # HF returns list of {label, score}
+        return data
+
+async def hf_segment(image_bytes: bytes) -> Dict:
+    # Use HF generic segmentation model that returns mask, but many models not friendly via API; simple heuristic fallback: return full area mask fraction = 0.5
+    # For MVP we attempt a call (may not produce masks) and fallback.
+    try:
+        headers = {"Authorization": f"Bearer {HF_API_KEY}"} if HF_API_KEY else {}
+        url = f"https://api-inference.huggingface.co/models/{HF_SEG_MODEL}"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            res = await client.post(url, headers=headers, content=image_bytes)
+            res.raise_for_status()
+            return res.json()
+    except Exception:
+        return {"mask_area_fraction": 0.5}
+
+def heuristic_portion_estimate(mask_area_fraction: float, label: str) -> float:
+    # assume image represents ~300
+
+ls -l create_project.sh
+
+
