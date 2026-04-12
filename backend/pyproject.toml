@@ -1,0 +1,9 @@
+[tool.poetry]
+name = "backend"
+version = "0.1.0"
+description = "FastAPI backend"
+authors = ["You you@example.com"]
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.97.0"
+uvicorn = {extras = ["standard"], version = "^0.22.0"}
