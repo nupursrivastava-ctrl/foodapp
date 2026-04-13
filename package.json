@@ -3,16 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "workspaces": [
-    "frontend",
-    "backend"
+ "frontend",
+ "backend"
   ],
   "scripts": {
-    "dev": "concurrently "yarn workspace frontend dev" "yarn workspace backend dev"",
-    "start": "yarn workspace frontend start & yarn workspace backend start",
-    "build": "yarn workspace frontend build && yarn workspace backend build",
-    "lint": "yarn workspace frontend lint && yarn workspace backend lint"
+ "dev": "concurrently "yarn workspace frontend dev" "yarn workspace backend dev"",
+ "start": "yarn workspace frontend start & yarn workspace backend start",
+ "build": "yarn workspace frontend build && yarn workspace backend build",
+ "lint": "yarn workspace frontend lint && yarn workspace backend lint"
   },
   "devDependencies": {
-    "concurrently": "^8.0.0"
+ "concurrently": "^8.0.0"
   }
 }
